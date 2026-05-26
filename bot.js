@@ -143,7 +143,7 @@ function formatBytes(bytes) {
 }
 
 async function sendUpgradeMessage(chatId) {
-  const keyboard = { inline_keyboard: [[{ text: '💬 Chat on WhatsApp', url: 'https://wa.me/2348028383053' }]] };
+  const keyboard = { inline_keyboard: [[{ text: '💬 Chat on WhatsApp', url: 'https://wa.me/2347012276929' }]] };
   await bot.sendMessage(chatId,
     '❌ You have used your 10 free conversions today.\n\n' +
     '💎 Upgrade to Premium\n\n' +
