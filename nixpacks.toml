@@ -1,0 +1,5 @@
+[phases.setup]
+nixPkgs = ["libreoffice", "ffmpeg", "nodejs_20"]
+
+[start]
+cmd = "node bot.js"

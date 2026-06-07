@@ -1,0 +1,27 @@
+{
+  "name": "genz-converter",
+  "version": "1.0.0",
+  "description": "GENZ Converter Telegram Bot",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "build": "apt-get install -y libreoffice ffmpeg 2>/dev/null || true"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.64.0",
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "sharp": "^0.33.0",
+    "tesseract.js": "^5.0.0",
+    "qrcode": "^1.5.3",
+    "multer": "^1.4.5-lts.1",
+    "pdf-lib": "^1.17.1",
+    "form-data": "^4.0.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "jimp": "^0.22.10"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
