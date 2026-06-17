@@ -1864,7 +1864,7 @@ bot.on('text', async (msg) => {
             'https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell',
             { inputs: prompt + ', high quality, detailed, 4K' },
             {
-              headers: { 'Authorization': 'Bearer ' + HF_KEY, 'Content-Type': 'application/json' },
+              headers: { 'Authorization': 'Bearer ' + HF_KEY, 'Content-Type': 'application/json', 'Accept': 'image/png' },
               responseType: 'arraybuffer',
               timeout: 60000
             }
