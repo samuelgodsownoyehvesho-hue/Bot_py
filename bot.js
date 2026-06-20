@@ -1466,7 +1466,7 @@ bot.onText(/\/lyricvideo/, async (msg) => {
     if (daily >= FREE_LIMIT) return sendUpgradeMessage(msg.chat.id, await getTimeUntilReset(uid), uid);
   }
   userState[uid] = { mode: 'lyricvideo_audio' };
-  bot.sendMessage(msg.chat.id, 'Send me the song audio file (mp3, m4a, etc).\n\nNote: works best with clear vocals. Very fast rap or heavy harmonies may not sync perfectly.');
+  bot.sendMessage(msg.chat.id, 'Send me the song audio file (mp3, m4a, etc).\n\nI will transcribe it automatically and sync the lyrics for you. If you want more accurate results, you can paste the exact lyrics right after sending the audio instead.');
 });
 
 bot.onText(/\/tts (.+)/, async (msg, match) => {
@@ -1712,7 +1712,7 @@ function buildAssFromAlignment(lyricLines, whisperWords, assPath) {
     cursor = Math.max(matchStart + wordCount, cursor + 1);
   }
 
-  // Build ASS subtitle file with simple fade-in styling
+  // Build ASS subtitle file with clean, readable styling
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: 1280
@@ -1720,7 +1720,7 @@ PlayResY: 720
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Lyric,Arial Black,56,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,3,2,2,40,40,60,1
+Style: Lyric,Arial Black,52,&H00FFFFFF,&H000000FF,&H00000000,&HB0000000,1,0,0,0,100,100,0,0,1,2,1,2,80,80,80,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -1731,10 +1731,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     const s = sec % 60;
     return h + ':' + String(m).padStart(2,'0') + ':' + s.toFixed(2).padStart(5,'0');
   }
+  // Wrap long lines onto two visual rows so text never overflows the safe frame area
+  function wrapLine(text, maxCharsPerRow) {
+    if (text.length <= maxCharsPerRow) return text;
+    const wordsArr = text.split(' ');
+    let row1 = '', row2 = '';
+    for (const w of wordsArr) {
+      if ((row1 + ' ' + w).trim().length <= maxCharsPerRow && row2 === '') {
+        row1 = (row1 + ' ' + w).trim();
+      } else {
+        row2 = (row2 + ' ' + w).trim();
+      }
+    }
+    return row1 + '\\N' + row2;
+  }
   let events = '';
   for (const lt of lineTimings) {
-    const safeText = lt.text.replace(/[{}]/g, '');
-    events += 'Dialogue: 0,' + toAssTime(lt.start) + ',' + toAssTime(lt.end) + ',Lyric,,0,0,0,,{\\fad(150,150)}' + safeText + '\n';
+    let safeText = lt.text.replace(/[{}]/g, '').trim();
+    if (!safeText) continue;
+    safeText = wrapLine(safeText, 38);
+    // Smooth 200ms fade in/out — long enough to feel polished, short enough to stay snappy between fast lines
+    events += 'Dialogue: 0,' + toAssTime(lt.start) + ',' + toAssTime(lt.end) + ',Lyric,,0,0,0,,{\\fad(200,200)}' + safeText + '\n';
   }
   fs.writeFileSync(assPath, header + events);
 }
@@ -1745,11 +1762,17 @@ async function renderLyricVideo(audioPath, assPath, outputPath, durationSec) {
     const dur = Math.max(durationSec + 1, 5);
     const assEscaped = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
     ffmpeg()
-      .input('color=c=0x1a1a2e:s=1280x720:d=' + dur)
+      .input('color=c=0x0f0c29:s=1280x720:d=' + dur)
       .inputFormat('lavfi')
       .input(audioPath)
+      .complexFilter([
+        // Subtle slow-moving diagonal gradient wash for a clean, non-distracting backdrop
+        "[0:v]geq=r='128+50*sin(2*PI*(X+Y+40*T)/900)':g='90+40*sin(2*PI*(X-Y+30*T)/900+2)':b='190+50*sin(2*PI*(X+Y-25*T)/900+4)'[bg]",
+        "[bg]ass='" + assEscaped + "'[outv]"
+      ])
       .outputOptions([
-        '-vf', "ass='" + assEscaped + "'",
+        '-map', '[outv]',
+        '-map', '1:a',
         '-c:v', 'libx264',
         '-c:a', 'aac',
         '-shortest',
@@ -1760,6 +1783,44 @@ async function renderLyricVideo(audioPath, assPath, outputPath, durationSec) {
       .on('error', reject)
       .run();
   });
+}
+
+async function renderLyricVideoFromState(uid, chatId, state, lyricLines, words, existingMsgId) {
+  const lvDir = state.lvDir;
+  const audioPath = state.audioPath;
+  let sm = existingMsgId ? { message_id: existingMsgId } : await bot.sendMessage(chatId, 'Rendering your lyric video, this can take a minute...');
+  if (existingMsgId) {
+    await bot.editMessageText('Rendering your lyric video, this can take a minute...', { chat_id: chatId, message_id: existingMsgId }).catch(()=>{});
+  }
+  try {
+    const premium = await isPremium(uid);
+    if (!premium) await incrementDailyCount(uid);
+
+    if (!words || words.length === 0) throw new Error('Could not detect word timing in this audio. Try a clearer vocal track.');
+
+    const assPath = path.join(lvDir, 'subs.ass');
+    const audioDuration = words[words.length - 1].end;
+    buildAssFromAlignment(lyricLines, words, assPath);
+
+    const outputPath = path.join(lvDir, 'lyricvideo.mp4');
+    await renderLyricVideo(audioPath, assPath, outputPath, audioDuration);
+
+    await bot.deleteMessage(chatId, sm.message_id).catch(()=>{});
+    const convId = await addHistory(uid, 'audio+lyrics', 'video', 'lyric video');
+    await bot.sendVideo(chatId, fs.createReadStream(outputPath), {
+      caption: 'Your lyric video is ready!',
+      reply_markup: feedbackKeyboard(convId)
+    }, { filename: 'lyricvideo.mp4', contentType: 'video/mp4' });
+  } catch(e) {
+    let detail = e.message;
+    if (e.response && e.response.data) {
+      try { detail = JSON.stringify(e.response.data).slice(0, 200); } catch(e2) {}
+    }
+    console.error('[LYRICVIDEO ERROR]', detail);
+    await bot.editMessageText('Lyric video generation failed: ' + detail.slice(0, 150), { chat_id: chatId, message_id: sm.message_id }).catch(()=>{});
+  } finally {
+    fs.rmSync(lvDir, { recursive: true, force: true });
+  }
 }
 
 // ─── VIDEO TO GIF ─────────────────────────────────────────────────────────────
@@ -2140,57 +2201,14 @@ bot.on('text', async (msg) => {
   if (state.mode === 'lyricvideo_lyrics') {
     delete userState[uid];
     const lyricsRaw = msg.text.trim();
-    const lvDir = state.lvDir;
-    const audioPath = state.audioPath;
     const lyricLines = lyricsRaw.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     if (lyricLines.length === 0) {
-      fs.rmSync(lvDir, { recursive: true, force: true });
+      fs.rmSync(state.lvDir, { recursive: true, force: true });
       return bot.sendMessage(msg.chat.id, 'No lyrics detected. Please send the audio again with /lyricvideo.');
     }
-    const sm = await bot.sendMessage(msg.chat.id, 'Analyzing audio and syncing lyrics, this can take a minute...');
-    try {
-      const premium = await isPremium(uid);
-      if (!premium) await incrementDailyCount(uid);
-
-      const GROQ_KEY = process.env.GROQ_KEY || '';
-      const FormData = require('form-data');
-      const form = new FormData();
-      form.append('file', fs.createReadStream(audioPath));
-      form.append('model', 'whisper-large-v3');
-      form.append('response_format', 'verbose_json');
-      form.append('timestamp_granularities[]', 'word');
-
-      const whisperResp = await axios.post('https://api.groq.com/openai/v1/audio/transcriptions', form, {
-        headers: { 'Authorization': 'Bearer ' + GROQ_KEY, ...form.getHeaders() },
-        timeout: 120000
-      });
-
-      const words = whisperResp.data.words || [];
-      if (words.length === 0) throw new Error('Could not detect word timing in this audio. Try a clearer vocal track.');
-
-      const assPath = path.join(lvDir, 'subs.ass');
-      const audioDuration = words.length ? words[words.length - 1].end : 0;
-      buildAssFromAlignment(lyricLines, words, assPath);
-
-      const outputPath = path.join(lvDir, 'lyricvideo.mp4');
-      await renderLyricVideo(audioPath, assPath, outputPath, audioDuration);
-
-      await bot.deleteMessage(msg.chat.id, sm.message_id).catch(()=>{});
-      const convId = await addHistory(uid, 'audio+lyrics', 'video', 'lyric video');
-      await bot.sendVideo(msg.chat.id, fs.createReadStream(outputPath), {
-        caption: 'Your lyric video is ready! Sync quality depends on vocal clarity — fast rap or overlapping vocals may drift slightly.',
-        reply_markup: feedbackKeyboard(convId)
-      }, { filename: 'lyricvideo.mp4', contentType: 'video/mp4' });
-    } catch(e) {
-      let detail = e.message;
-      if (e.response && e.response.data) {
-        try { detail = JSON.stringify(e.response.data).slice(0, 200); } catch(e2) {}
-      }
-      console.error('[LYRICVIDEO ERROR]', detail);
-      await bot.editMessageText('Lyric video generation failed: ' + detail.slice(0, 150), { chat_id: msg.chat.id, message_id: sm.message_id }).catch(()=>{});
-    } finally {
-      fs.rmSync(lvDir, { recursive: true, force: true });
-    }
+    // User pasted exact lyrics — use those words for the line text, but still need timing.
+    // Re-run alignment against the already-fetched Whisper words for accurate timing with their exact text.
+    await renderLyricVideoFromState(uid, msg.chat.id, state, lyricLines, state.autoWords, state.pendingMsgId);
     return;
   }
 
@@ -2300,17 +2318,60 @@ async function handleFileExtended(msg) {
     return;
   }
 
-  // Lyric video - capture the audio file, then ask for lyrics
+  // Lyric video - capture the audio, then auto-transcribe and render immediately
   if (msg.audio && state && state.mode === 'lyricvideo_audio') {
     const lvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyricvideo-'));
     const audioPath = path.join(lvDir, 'song' + (path.extname(fileName) || '.mp3'));
+    const sm = await bot.sendMessage(chatId, 'Got the audio. Transcribing and syncing now, this can take a minute...\n\n(If you want more accurate lyrics, send the exact text now within 20 seconds and I will use that instead.)');
     try {
       await downloadFile(fileId, audioPath);
-      userState[uid] = { mode: 'lyricvideo_lyrics', audioPath, lvDir };
-      bot.sendMessage(chatId, 'Got the audio. Now paste the song lyrics (plain text, one line per lyric line).');
+
+      const GROQ_KEY = process.env.GROQ_KEY || '';
+      const FormData = require('form-data');
+      const form = new FormData();
+      form.append('file', fs.createReadStream(audioPath));
+      form.append('model', 'whisper-large-v3');
+      form.append('response_format', 'verbose_json');
+      form.append('timestamp_granularities[]', 'word');
+
+      const whisperResp = await axios.post('https://api.groq.com/openai/v1/audio/transcriptions', form, {
+        headers: { 'Authorization': 'Bearer ' + GROQ_KEY, ...form.getHeaders() },
+        timeout: 120000
+      });
+      const words = whisperResp.data.words || [];
+      if (words.length === 0) throw new Error('Could not detect any words in this audio. Try a clearer vocal track.');
+
+      // Build lyric lines directly from Whisper's own segment breaks (natural phrasing, not guessed)
+      const segments = whisperResp.data.segments || [];
+      const autoLines = segments.length
+        ? segments.map(s => s.text.trim()).filter(Boolean)
+        : [whisperResp.data.text.trim()];
+
+      userState[uid] = {
+        mode: 'lyricvideo_lyrics',
+        audioPath, lvDir,
+        autoWords: words,
+        autoLines,
+        awaitingPastedLyrics: true,
+        pendingMsgId: sm.message_id,
+        chatId
+      };
+
+      // Give the user a short window to paste exact lyrics; otherwise auto-render from transcription
+      setTimeout(async () => {
+        const cur = userState[uid];
+        if (!cur || cur.mode !== 'lyricvideo_lyrics' || !cur.awaitingPastedLyrics) return; // user already provided lyrics or moved on
+        delete userState[uid];
+        await renderLyricVideoFromState(uid, chatId, cur, cur.autoLines, cur.autoWords);
+      }, 20000);
     } catch(e) {
       fs.rmSync(lvDir, { recursive: true, force: true });
-      bot.sendMessage(chatId, 'Failed to download that audio file. Please try again.');
+      let detail = e.message;
+      if (e.response && e.response.data) {
+        try { detail = JSON.stringify(e.response.data).slice(0, 150); } catch(e2) {}
+      }
+      console.error('[LYRICVIDEO AUTO ERROR]', detail);
+      await bot.editMessageText('Could not process that audio: ' + detail.slice(0, 150), { chat_id: chatId, message_id: sm.message_id }).catch(()=>{});
       delete userState[uid];
     }
     return;
