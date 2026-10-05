@@ -2125,7 +2125,7 @@ async function generateAIImageBuffer(prompt, opts) {
       console.log('[IMG] Trying Cloudflare Workers AI (FLUX.1-schnell)...');
       const cfResp = await axios.post(
         'https://api.cloudflare.com/client/v4/accounts/' + CF_ACCOUNT_ID + '/ai/run/@cf/black-forest-labs/flux-1-schnell',
-        { prompt: (prompt + ', high quality, detailed').slice(0, 2048), seed },
+        { prompt: (prompt + ', high quality, detailed').slice(0, 2048) },
         { headers: { 'Authorization': 'Bearer ' + CF_API_TOKEN, 'Content-Type': 'application/json' }, timeout: 60000 }
       );
       const b64 = cfResp.data && cfResp.data.result && cfResp.data.result.image;
